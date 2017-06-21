@@ -1,0 +1,139 @@
+#!/usr/bin/env python2
+# -*- coding: utf-8 -*-
+"""
+Created on Wed Jun 21 18:09:58 2017
+
+@author: galyo
+"""
+
+# create a traffic based confusion matrix between all cities
+
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.image as image
+
+from scipy.sparse.csgraph import shortest_path
+from sklearn.manifold import MDS
+import pandas as pd
+import os
+import imageio
+import shutil
+
+step_size = 4
+
+def float_to_str(time):
+    return '{0:02.0f}:{1:02.0f}'.format(*divmod(time * 60, 60))
+
+def make_distance_mat(drive_times,cities):
+    n=len(cities)
+    D=np.zeros([n,n])
+    for (src,dst,t) in drive_times[['Source','Destination','DriveTime']].values:
+        i=cities.index(src)
+        j=cities.index(dst)
+        D[i,j]=t
+    return D
+
+
+def plot_confusion_mat(conf_arr, cities, target_time, k):
+
+    fig = plt.figure()
+    plt.clf()
+    ax = fig.add_subplot(111)
+    ax.set_aspect(1)
+    res = ax.imshow(np.array(conf_arr), cmap=plt.cm.jet, 
+                    interpolation='nearest')
+    
+    width, height = conf_arr.shape
+    
+    fig.tight_layout(pad=4) # enough whitespace aroung image
+    cb = fig.colorbar(res)
+    cb.set_clim(0,0.5)
+    plt.xticks(range(width), cities[:width], rotation=90 , fontsize=6)
+    plt.yticks(range(height), cities[:height] , fontsize = 6)
+    plt.title("Traffic @ {0}".format(float_to_str(target_time)), fontsize=8)
+    cb.remove()
+    plt.savefig('plots/{1}_confusion_matrix_for_{0}.png'.format(float_to_str(target_time), k), format='png', dpi=400)
+
+def create_confusion_graph(drive_times, cities, target_time, hours, max_ratio, k):
+    '''
+    create a confusion graph while keeping the low time fixed (04:00), 
+    and changing the time we check traffic on
+    '''   
+    low_time = hours[16]        # 04:00 ("no traffic")
+    
+    # get time without traffic
+    D_no_traffic = make_distance_mat(drive_times[drive_times.Hour==low_time],cities)
+    D_with_traffic = make_distance_mat(drive_times[drive_times.Hour==target_time],cities)
+    
+    # replace diagonal of D_no_traffic with non-zero values, to allow diision.
+    np.fill_diagonal(D_no_traffic, 1)
+    
+    # elemnt-wise division to get "trafic ratio"
+    traffic_ratio = D_with_traffic / D_no_traffic
+    
+    # normalize by max traffic ratio
+    traffic_ratio /= max_ratio 
+    
+    traffic_ratio -= 0.28146853
+    np.fill_diagonal(traffic_ratio, 0)
+    
+    # plot confusion matrix to file
+    plot_confusion_mat(traffic_ratio, cities, target_time, k)
+ 
+def find_max_ratio(drive_times, cities, hours):
+    global_max = -999
+    D_no_traffic = make_distance_mat(drive_times[drive_times.Hour==hours[16]],cities)
+    np.fill_diagonal(D_no_traffic, 1)
+    
+    for time in hours:
+        D_with_traffic = make_distance_mat(drive_times[drive_times.Hour==time],cities)
+        traffic_ratio = D_with_traffic / D_no_traffic
+        current_max = traffic_ratio.max()
+        if current_max > global_max:
+            global_max = current_max
+    return global_max
+
+def create_gif():
+    filenames = os.listdir(os.path.join(os.getcwd(), 'plots'))
+    # sort by hour
+    filenames.sort(key=lambda x:int(x.split('_')[0]))
+    
+    images = []
+    for filename in filenames:
+        images.append(imageio.imread(os.path.join(os.getcwd(), 'plots', filename)))
+    imageio.mimsave('traffic_animation_{0}.gif'.format(step_size), images, duration=1.0)
+
+    
+def main():
+    # load drive time data
+    drive_times = pd.read_csv('drive_times_210617.csv')
+    city_locs = pd.read_csv('city_locations.csv')
+    
+    # make sure plot dir is empty
+    plot_dir = os.path.join(os.getcwd(), 'plots')
+    shutil.rmtree(plot_dir)
+    os.makedirs(plot_dir)
+    
+    # list of cities and hours
+    cities = list(city_locs['City'])
+    hours = np.unique(drive_times.Hour.values)
+    
+    # find maximum traffic ratio - we'll need this to normalize all images by.
+    max_ratio = find_max_ratio(drive_times, cities, hours)
+    
+
+    # create gif from all plots.
+    # use step_size to decide skip interval.
+    for i in range(len(hours)/step_size):
+        time = hours[step_size*i]
+        create_confusion_graph(drive_times, cities, time, hours, max_ratio, i)
+        if step_size*i%4==0:
+            print "finished {0} out of {1} plots".format(i, len(hours)/step_size)
+    
+    create_gif()
+    
+    
+    
+    
+if __name__ == "__main__":
+    main()
